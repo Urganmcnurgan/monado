@@ -1295,6 +1295,14 @@ struct oxr_instance
 		 * when calling xrEndFrame.
 		 */
 		bool no_layer_flags_bit_validation;
+
+		/*!
+		 * Ignore the application's suggested bindings for
+		 * valve/index_controller and khr/simple_controller, so
+		 * its complete oculus/touch_controller bindings get
+		 * rebound to the Index controllers instead.
+		 */
+		bool ignore_index_controller_bindings;
 	} quirks;
 
 	//! Debug messengers
@@ -1767,6 +1775,9 @@ struct oxr_swapchain
 
 	//! Swapchain size.
 	uint32_t width, height;
+
+	//! Varjo Aero: created with an 8-bit sRGB Vulkan format (candidate for the doubly-encoded sRGB fix).
+	bool aero_srgb_format;
 
 	//! For 1 is 2D texture, greater then 1 2D array texture.
 	uint32_t array_layer_count;

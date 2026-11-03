@@ -19,6 +19,8 @@
 
 #include "render/render_interface.h"
 
+#include "util/u_aero.h"
+
 #include "cache/render_compute_pipeline_cache.h"
 #include "cache/render_shader_specialization_helpers.h"
 
@@ -798,11 +800,16 @@ render_resources_init(struct render_resources *r,
 	    r->pipeline_cache);                  //
 	XVK_CHK_WITH_RET(xret, "render_layer_pipeline_cache_init", false);
 
+	// Varjo Aero: quad-view inset fade width (AERO_INSET_EDGE, like the graphics compositor); AERO_INSET_ROUND=1
+	// passes it negated = round fade in layer.comp.
+	float inset_edge = u_aero_get_float("AERO_INSET_EDGE", RENDER_LAYER_DEFAULT_INSET_BLEND_EDGE);
+	if (u_aero_get_bool("AERO_INSET_ROUND", false)) {
+		inset_edge = -inset_edge;
+	}
+
 	const struct render_layer_spec layer_variants[] = {
-	    render_make_layer_spec(VK_FALSE, VK_TRUE, r->compute.layer.image_array_size,
-	                           RENDER_LAYER_DEFAULT_INSET_BLEND_EDGE),
-	    render_make_layer_spec(VK_TRUE, VK_TRUE, r->compute.layer.image_array_size,
-	                           RENDER_LAYER_DEFAULT_INSET_BLEND_EDGE),
+	    render_make_layer_spec(VK_FALSE, VK_TRUE, r->compute.layer.image_array_size, inset_edge),
+	    render_make_layer_spec(VK_TRUE, VK_TRUE, r->compute.layer.image_array_size, inset_edge),
 	};
 
 	xret = render_layer_pipeline_cache_prewarm( //

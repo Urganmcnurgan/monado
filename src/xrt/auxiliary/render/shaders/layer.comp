@@ -21,8 +21,8 @@ struct layer_data
 	uint unpremultiplied_alpha;
 	uint inverted_alpha;
 
-	// This struct is used in an array, gets padded to vec4.
-	uint _padding0;
+	// Varjo Aero: decode sRGB once more (doubly encoded app images). Fills the vec4 padding slot.
+	uint srgb_decode;
 };
 
 struct image_info
@@ -452,6 +452,19 @@ vec4 do_projection_inset(vec2 view_uv, uint layer, out float out_inset_blend_fac
 	vec2 uv = vec2(0.0, 0.0);
 	vec4 colour = do_projection_uv(view_uv, layer, uv);
 
+	if (k_inset_blend_edge < 0.0) {
+		// Varjo Aero: negative edge = round fade over the circle inscribed in the inset (AERO_INSET_ROUND),
+		// same as the graphics compositor's layer_projection.frag.
+		out_inset_blend_factor = smoothstep(0.0, -k_inset_blend_edge, 0.5 - length(uv - vec2(0.5)));
+		return colour;
+	}
+
+	if (k_inset_blend_edge == 0.0) {
+		// Hard edge (AERO_INSET_EDGE=0): smoothstep with equal edges is undefined in GLSL.
+		out_inset_blend_factor = 1.0;
+		return colour;
+	}
+
 	vec2 negative_edges = smoothstep(0, k_inset_blend_edge, uv);
 	vec2 positive_edges = smoothstep(1.0, 1.0 - k_inset_blend_edge, uv);
 	vec2 inset_blend_factor = min(negative_edges, positive_edges);
@@ -613,6 +626,11 @@ vec4 do_layers(vec2 view_uv)
 			rgba = apply_chroma_key(rgba, layer);
 			break;
 		default: break;
+		}
+
+		if (LAYER.layer_data.srgb_decode != 0) {
+			rgba.rgb = mix(rgba.rgb / 12.92, pow((rgba.rgb + 0.055) / 1.055, vec3(2.4)),
+			               step(vec3(0.04045), rgba.rgb));
 		}
 
 		// Apply color scale and bias

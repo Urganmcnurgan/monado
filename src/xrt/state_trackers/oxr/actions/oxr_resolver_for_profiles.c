@@ -113,6 +113,21 @@ try_resolve_with_device_name(struct oxr_sink_logger *slog,
 		return true;
 	}
 
+	/*
+	 * The eye gaze interaction profile has a single generic input (XRT_INPUT_GENERIC_EYE_GAZE_POSE), so it binds
+	 * directly to any device holding the eyes role (e.g. an HMD with eye tracking) -- no rebinding table needed.
+	 */
+	if (device_name == XRT_DEVICE_EYE_GAZE_INTERACTION) {
+		fill_binding_profiles( //
+		    slog,              //
+		    registry,          //
+		    profile,           // oxr_suggested_profile
+		    NULL,              // oxr_rebinding_profile
+		    info);             //
+		log_resolver_info(slog, info);
+		return true;
+	}
+
 	return false;
 }
 

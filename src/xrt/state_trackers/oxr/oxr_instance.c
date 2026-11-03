@@ -222,6 +222,7 @@ apply_quirks(struct oxr_logger *log, struct oxr_instance *inst, const XrInstance
 	inst->quirks.no_texture_source_alpha = false;
 	inst->quirks.no_usage_bit_validation_in_create_swapchain = false;
 	inst->quirks.no_layer_flags_bit_validation = false;
+	inst->quirks.ignore_index_controller_bindings = false;
 
 	if (starts_with("UnrealEngine", inst->appinfo.detected.engine.name) && //
 	    inst->appinfo.detected.engine.major == 4 &&                        //
@@ -244,6 +245,20 @@ apply_quirks(struct oxr_logger *log, struct oxr_instance *inst, const XrInstance
 	if (strcmp("FS2020", create_info->applicationInfo.applicationName) == 0) {
 		inst->quirks.no_layer_flags_bit_validation = true;
 	}
+
+	// Red Matter 2 (UE 4.27, -hmd=OpenXR) suggests valve/index_controller with poses only, no buttons, while its
+	// oculus/touch_controller suggestions are complete.
+	// The name carries the version ("Red Matter 21.0.007"); Steam app id 2081470 as well (Varjo Aero, Steam sets
+	// SteamAppId for every game it starts).
+	const char *steam_app_id = getenv("SteamAppId");
+	if (starts_with("Red Matter 2", create_info->applicationInfo.applicationName) ||
+	    (steam_app_id != NULL && strcmp(steam_app_id, "2081470") == 0)) {
+		inst->quirks.ignore_index_controller_bindings = true;
+	}
+
+	// Name and engine as the quirks above see them (Varjo Aero: compatibility notes per game).
+	oxr_log(log, "Application '%s', engine '%s' %u", create_info->applicationInfo.applicationName,
+	        create_info->applicationInfo.engineName, create_info->applicationInfo.engineVersion);
 
 	// Currently always true.
 	inst->quirks.no_validation_error_in_create_ref_space = true;

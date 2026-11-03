@@ -156,6 +156,13 @@ steamvr_open_system_impl(struct xrt_builder *xb,
 	if (gamepad != XRT_DEVICE_ROLE_UNASSIGNED) {
 		tbo->gamepad = xsysd->static_xdevs[gamepad];
 	}
+	// Eye and face tracking (e.g. Varjo Aero eye gaze): assigned above but previously never handed on.
+	if (eyes != XRT_DEVICE_ROLE_UNASSIGNED) {
+		tbo->eyes = xsysd->static_xdevs[eyes];
+	}
+	if (face != XRT_DEVICE_ROLE_UNASSIGNED) {
+		tbo->face = xsysd->static_xdevs[face];
+	}
 
 	tbo->T_stage_local = (struct xrt_pose)XRT_POSE_IDENTITY;
 

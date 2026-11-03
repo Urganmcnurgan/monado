@@ -37,6 +37,10 @@
 #include <filesystem>
 #include <istream>
 #include <algorithm>
+#include <cstring>
+#include <cstdlib>
+
+#include "util/u_aero.h"
 
 namespace {
 
@@ -279,6 +283,31 @@ Context::setup_hmd(const char *serial, vr::ITrackedDeviceServerDriver *driver)
 		view.rot = u_device_rotation_ident;
 	}
 
+	// Varjo Aero (lighthouse model "hedy"): its two panels are driven as ONE 5760x2720 frame that is mounted
+	// rotated 180 degrees, so the left eye sees the RIGHT half of the frame, upside down. The lighthouse driver
+	// reports the 2880x2880 render target as the viewport instead of the 2880x2720 panel. Verified on hardware
+	// 2026-10-27 (desktop on the panel: transform 180 -> frame left half = left eye).
+	const bool is_aero = std::strstr(hmd->str, "Varjo") != nullptr && std::strstr(hmd->str, "hedy") != nullptr;
+	if (is_aero) {
+		const uint32_t eye_w = 2880, eye_h = 2720;
+		for (size_t idx = 0; idx < 2; ++idx) {
+			xrt_view &view = hmd_parts->base.views[idx];
+			CTX_INFO("Varjo Aero: lighthouse reported view %zu viewport %u,%u %ux%u", idx,
+			         view.viewport.x_pixels, view.viewport.y_pixels, view.viewport.w_pixels,
+			         view.viewport.h_pixels);
+			view.viewport.x_pixels = idx == 0 ? eye_w : 0;
+			view.viewport.y_pixels = 0;
+			view.viewport.w_pixels = eye_w;
+			view.viewport.h_pixels = eye_h;
+			view.display.w_pixels = eye_w;
+			view.display.h_pixels = eye_h;
+			view.rot = u_device_rotation_ident; // rotated in the lens lookup, see HmdDevice::aero_rotated
+		}
+		hmd->aero_rotated = true;
+		CTX_INFO("Varjo Aero: using 2x %ux%u, 180 degree rotation (lens lookup), eyes swapped on the panel",
+		         eye_w, eye_h);
+	}
+
 	hmd_parts->base.screens[0].w_pixels =
 	    hmd_parts->base.views[0].display.w_pixels + hmd_parts->base.views[1].display.w_pixels;
 	hmd_parts->base.screens[0].h_pixels = hmd_parts->base.views[0].display.h_pixels;
@@ -299,6 +328,31 @@ Context::setup_hmd(const char *serial, vr::ITrackedDeviceServerDriver *driver)
 		fov.angle_right = atanf(tan_right);
 		fov.angle_up = atanf(tan_bottom);
 		fov.angle_down = atanf(tan_top);
+	}
+
+	// Varjo Aero: replace the lighthouse lens model with the factory per-colour distortion maps stored on the
+	// headset, if a converted table exists ($AERO_DISTORTION, default ~/.config/monado/varjo-aero-distortion.bin).
+	if (is_aero) {
+		std::string path;
+		if (const char *env = u_aero_get("AERO_DISTORTION"); env != nullptr && *env != '\0') {
+			path = env;
+		} else if (const char *home = std::getenv("HOME"); home != nullptr) {
+			path = std::string(home) + "/.config/monado/varjo-aero-distortion.bin";
+		}
+		if (!path.empty() && hmd->load_aero_distortion(path.c_str())) {
+			for (size_t idx = 0; idx < 2; ++idx) {
+				const float *t = hmd->aero_dist.fov_tan[idx];
+				distortion.fov[idx].angle_left = atanf(t[0]);
+				distortion.fov[idx].angle_right = atanf(t[1]);
+				distortion.fov[idx].angle_up = atanf(t[2]);
+				distortion.fov[idx].angle_down = atanf(t[3]);
+				CTX_INFO("Varjo Aero: view %zu fov (deg) left %.2f right %.2f up %.2f down %.2f", idx,
+				         distortion.fov[idx].angle_left * 57.29578f,
+				         distortion.fov[idx].angle_right * 57.29578f,
+				         distortion.fov[idx].angle_up * 57.29578f,
+				         distortion.fov[idx].angle_down * 57.29578f);
+			}
+		}
 	}
 
 	u_var_add_root(hmd, "SteamVR HMD Device", true);

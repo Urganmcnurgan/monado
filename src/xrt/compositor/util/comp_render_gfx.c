@@ -16,6 +16,7 @@
 #include "math/m_mathinclude.h"
 
 #include "util/u_trace_marker.h"
+#include "util/u_aero.h"
 
 #include "vk/vk_helpers.h"
 
@@ -420,6 +421,24 @@ do_projection_layer(struct render_gfx *render,
 	calc_mvp_rot_only(state, layer_data, &vd->pose, &scale, &data.mvp);
 
 	apply_bias_and_scale_from_layer(layer_data, &data.color_scale, &data.color_bias);
+
+	// Quad-view inset (Varjo Aero): fade the inset into the context view over its border, like the compute
+	// compositor's RENDER_LAYER_DEFAULT_INSET_BLEND_EDGE. AERO_INSET_EDGE overrides the width (0 = hard edge).
+	static bool aero_read = false;
+	static float aero_edge = RENDER_LAYER_DEFAULT_INSET_BLEND_EDGE;
+	static bool aero_round = false;
+	if (!aero_read) { // read once, this runs for every layer of every frame
+		aero_read = true;
+		aero_edge = u_aero_get_float("AERO_INSET_EDGE", RENDER_LAYER_DEFAULT_INSET_BLEND_EDGE);
+		aero_round = u_aero_get_bool("AERO_INSET_ROUND", false);
+	}
+	data.inset[0] = data.inset[1] = data.inset[2] = data.inset[3] = 0.0f;
+	if ((layer_data->flags & XRT_LAYER_SPLIT_QUAD_VIEW_INSET) != 0) {
+		data.inset[0] = aero_edge;
+		data.inset[1] = aero_round ? 1.0f : 0.0f;
+	}
+	// Varjo Aero: doubly sRGB-encoded app images (oxr sets the flag, see aero_srgb_flags) -> decode once more.
+	data.inset[2] = (layer_data->flags & XRT_LAYER_COMPOSITION_AERO_SRGB_DECODE_BIT) != 0 ? 1.0f : 0.0f;
 
 	// Can fail if we have too many layers.
 	VkDescriptorSet descriptor_set = VK_NULL_HANDLE;

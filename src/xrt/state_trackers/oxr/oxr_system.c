@@ -14,6 +14,7 @@
 
 #include "util/u_debug.h"
 #include "util/u_verify.h"
+#include "util/u_aero.h"
 
 #include "math/m_api.h"
 
@@ -153,6 +154,19 @@ fill_in_view_config_properties(struct oxr_logger *log,
 	fill_in_view_config_properties_view_config_type(props, view_config->view_type);
 	fill_in_view_config_properties_views(log, props->views, view_config);
 	props->view_count = view_config->view_count;
+
+	// AERO_STEREO_PX=WxH (Varjo Aero): recommended resolution for plain stereo apps (most games), following the
+	// quality level chosen in the Varjo Aero settings (aero_texsizes.py); by default the device size times
+	// XRT_COMPOSITOR_SCALE_PERCENTAGE.
+	const char *aero_stereo_px = u_aero_get("AERO_STEREO_PX");
+	uint32_t sw = 0, sh = 0;
+	if (view_config->view_type == XRT_VIEW_TYPE_STEREO && aero_stereo_px != NULL &&
+	    sscanf(aero_stereo_px, "%ux%u", &sw, &sh) == 2 && sw > 0 && sh > 0) {
+		for (uint32_t i = 0; i < props->view_count; i++) {
+			props->views[i].recommendedImageRectWidth = MIN(sw, props->views[i].maxImageRectWidth);
+			props->views[i].recommendedImageRectHeight = MIN(sh, props->views[i].maxImageRectHeight);
+		}
+	}
 }
 
 static void
@@ -172,6 +186,29 @@ fill_in_view_emulated_quadview_config_properties(struct oxr_logger *log,
 
 	// Last two views are inset views copied from stereo config.
 	fill_in_view_config_properties_views(log, props->views + 2, stereo_view_config);
+
+	// AERO_INSET_PX=N (Varjo Aero): recommended inset (focus) resolution for the chosen quality level
+	// (aero_texsizes.py); by default the inset copies the full stereo size.
+	const char *aero_inset_px = u_aero_get("AERO_INSET_PX");
+	if (aero_inset_px != NULL && atoi(aero_inset_px) > 0) {
+		for (uint32_t i = 2; i < 4; i++) {
+			uint32_t px = (uint32_t)atoi(aero_inset_px);
+			props->views[i].recommendedImageRectWidth = MIN(px, props->views[i].maxImageRectWidth);
+			props->views[i].recommendedImageRectHeight = MIN(px, props->views[i].maxImageRectHeight);
+		}
+	}
+
+	// AERO_CONTEXT_PX=WxH (Varjo Aero): recommended context (outer) view resolution for quad-view apps. Varjo
+	// renders the context much smaller than plain stereo when an inset carries the detail (e.g. dynamic_foveation
+	// Highest 2276x1948 vs stereo 4148x3556); by default the context copies the stereo size.
+	const char *aero_context_px = u_aero_get("AERO_CONTEXT_PX");
+	uint32_t cw = 0, ch = 0;
+	if (aero_context_px != NULL && sscanf(aero_context_px, "%ux%u", &cw, &ch) == 2 && cw > 0 && ch > 0) {
+		for (uint32_t i = 0; i < 2; i++) {
+			props->views[i].recommendedImageRectWidth = MIN(cw, props->views[i].maxImageRectWidth);
+			props->views[i].recommendedImageRectHeight = MIN(ch, props->views[i].maxImageRectHeight);
+		}
+	}
 
 	props->view_count = 4;
 }

@@ -9,6 +9,9 @@
  * @ingroup oxr_api
  */
 
+#include <string.h>
+#include <stdlib.h>
+#include "util/u_aero.h"
 #include "util/u_debug.h"
 #include "util/u_trace_marker.h"
 
@@ -244,6 +247,26 @@ oxr_xrSuggestInteractionProfileBindings(XrInstance instance,
 	if (ret != XR_SUCCESS) {
 		return oxr_error(&log, ret, "(suggestedBindings->interactionProfile == 0x%08" PRIx64 ") invalid path",
 		                 ip);
+	}
+
+	// Quirk: an app whose valve/index_controller suggestions are incomplete (see apply_quirks). Accept but ignore
+	// them, so Monado falls back to another profile the app suggested and rebinds it to the Index controllers.
+	// AERO_SKIP_PROFILES=PATH[,PATH...] (Varjo Aero) does the same for any app and profile, for trying out games.
+	const char *aero_skip =
+	    inst->quirks.ignore_index_controller_bindings
+	        ? "/interaction_profiles/valve/index_controller,/interaction_profiles/khr/simple_controller"
+	        : u_aero_get("AERO_SKIP_PROFILES");
+	if (aero_skip != NULL) {
+		for (const char *s = aero_skip; *s != '\0';) {
+			const char *e = strchr(s, ',');
+			size_t n = e != NULL ? (size_t)(e - s) : strlen(s);
+			if (n == ip_length && strncmp(s, ip_str, n) == 0) {
+				oxr_log(&log, "Ignoring suggested bindings for %s (quirk / AERO_SKIP_PROFILES)",
+				        ip_str);
+				return XR_SUCCESS;
+			}
+			s += n + (e != NULL ? 1 : 0);
+		}
 	}
 
 	// Used in the loop that verifies the suggested bindings paths.

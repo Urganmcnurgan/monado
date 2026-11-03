@@ -965,6 +965,9 @@ struct render_gfx_layer_projection_data
 	struct xrt_matrix_4x4 mvp;
 	struct xrt_colour_rgba_f32 color_scale;
 	struct xrt_colour_rgba_f32 color_bias;
+	//! x: quad-view inset soft-edge width in inset UV (0 = not an inset / no fade); y: 1 = round fade;
+	//! z: 1 = decode sRGB once more (Varjo Aero, doubly encoded app image); w unused.
+	float inset[4];
 };
 
 /*!
@@ -1276,7 +1279,7 @@ struct render_compute_layer_ubo_data
 			uint32_t layer_type;
 			uint32_t unpremultiplied_alpha;
 			uint32_t inverted_alpha;
-			uint32_t _padding0;
+			uint32_t srgb_decode; // Varjo Aero: XRT_LAYER_COMPOSITION_AERO_SRGB_DECODE_BIT
 		} layer_data;
 
 		/*!

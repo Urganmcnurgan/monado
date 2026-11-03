@@ -54,9 +54,15 @@
 #include "actions/oxr_session_attached_actions.h"
 #include "actions/oxr_binding.h"
 
+#include "util/u_aero.h"
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <assert.h>
+#include <string.h>
+#include <unistd.h>
+#include <fcntl.h>
+#include <math.h>
 
 
 DEBUG_GET_ONCE_NUM_OPTION(ipd, "OXR_DEBUG_IPD_MM", 63)
@@ -250,6 +256,41 @@ struct locate_views_data
 	struct xrt_pose poses[XRT_MAX_COMPOSITOR_VIEW_CONFIGS_VIEW_COUNT];
 };
 
+/*
+ * Varjo Aero: gaze-driven quad-view inset (AERO_GAZE_INSET=1). aero_eyetrack.py publishes the newest gaze to
+ * /dev/shm/aero-gaze: struct <d f f I I> = t (CLOCK_MONOTONIC s), x, y (deg, +x right, +y up), valid, seq.
+ * Used when fresh (< 100 ms), else the inset falls back to straight ahead (fixed foveation); clamped to +-20 deg.
+ */
+static bool
+aero_read_gaze(float *out_x, float *out_y)
+{
+	static int fd = -1;
+	if (fd < 0) {
+		fd = open("/dev/shm/aero-gaze", O_RDONLY | O_CLOEXEC);
+		if (fd < 0) {
+			return false;
+		}
+	}
+	unsigned char buf[24];
+	if (pread(fd, buf, sizeof(buf), 0) != (ssize_t)sizeof(buf)) {
+		return false;
+	}
+	double t;
+	float x, y;
+	uint32_t valid;
+	memcpy(&t, buf, 8);
+	memcpy(&x, buf + 8, 4);
+	memcpy(&y, buf + 12, 4);
+	memcpy(&valid, buf + 16, 4);
+	double now = (double)os_monotonic_get_ns() / 1e9;
+	if (!valid || now - t > 0.1 || now - t < -0.1) {
+		return false;
+	}
+	*out_x = x < -20.0f ? -20.0f : (x > 20.0f ? 20.0f : x);
+	*out_y = y < -20.0f ? -20.0f : (y > 20.0f ? 20.0f : y);
+	return true;
+}
+
 static XrResult
 get_device_fovs_and_poses(struct oxr_logger *log,
                           struct oxr_session *sess,
@@ -328,6 +369,28 @@ get_device_fovs_and_poses(struct oxr_logger *log,
 		    .angle_up = src_fov.angle_up / 2,
 		    .angle_down = src_fov.angle_down / 2,
 		};
+
+		// AERO_INSET_DEG=D (Varjo Aero): symmetric +-D degree inset around the eye's forward axis, as in
+		// Varjo Aero focus views: 30/30/30/30 deg.
+		// Read once: this runs for every xrLocateViews call.
+		static bool aero_read = false;
+		static float aero_inset_deg = 0.0f;
+		static bool aero_gaze_inset = false;
+		if (!aero_read) {
+			aero_read = true;
+			aero_inset_deg = u_aero_get_float("AERO_INSET_DEG", 0.0f);
+			aero_gaze_inset = u_aero_get_bool("AERO_GAZE_INSET", false);
+		}
+		if (aero_inset_deg > 0.0f) {
+			const float a = (float)(aero_inset_deg * M_PI / 180.0);
+			float gx = 0.0f, gy = 0.0f; // inset centre (deg), straight ahead by default
+			if (aero_gaze_inset) {
+				aero_read_gaze(&gx, &gy);
+			}
+			const float cx = (float)(gx * M_PI / 180.0), cy = (float)(gy * M_PI / 180.0);
+			out_data->fovs[i] = (struct xrt_fov){
+			    .angle_left = cx - a, .angle_right = cx + a, .angle_up = cy + a, .angle_down = cy - a};
+		}
 
 		out_data->poses[i] = src_pose;
 	}

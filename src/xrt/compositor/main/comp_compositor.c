@@ -62,6 +62,7 @@
 #include "util/u_pretty_print.h"
 #include "util/u_distortion_mesh.h"
 #include "util/u_verify.h"
+#include "util/u_aero.h"
 
 #include "util/comp_vulkan.h"
 #include "main/comp_compositor.h"
@@ -1239,8 +1240,9 @@ comp_main_create_system_compositor(struct xrt_device *xdev,
 	sys_info->view_types[0] = c->view_configs[0].view_type;
 	c->view_config_count = sys_info->view_type_count = 1; // Only one view config for now.
 
-	if (c->settings.use_compute && // Only compute for now.
-	    view_type == XRT_VIEW_TYPE_STEREO) {
+	// AERO_GFX_QUAD=1 (Varjo Aero): also offer emulated quad views on the graphics compositor -- its layer
+	// renderer maps every projection layer through that layer's own FOV, so the inset lands in place (hard edge).
+	if ((c->settings.use_compute || u_aero_get_bool("AERO_GFX_QUAD", false)) && view_type == XRT_VIEW_TYPE_STEREO) {
 		sys_info->supports_emulated_quad_views_with_inset = true;
 	}
 

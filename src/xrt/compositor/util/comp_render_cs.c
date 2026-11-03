@@ -731,6 +731,8 @@ comp_render_cs_layer(struct render_compute *render,
 		ubo_data->layers[cur_layer].layer_data.layer_type = cs_layer_type;
 		ubo_data->layers[cur_layer].layer_data.unpremultiplied_alpha = is_layer_unpremultiplied(data);
 		ubo_data->layers[cur_layer].layer_data.inverted_alpha = is_layer_alpha_inverted(data);
+		ubo_data->layers[cur_layer].layer_data.srgb_decode =
+		    (data->flags & XRT_LAYER_COMPOSITION_AERO_SRGB_DECODE_BIT) != 0 ? 1 : 0;
 
 		apply_bias_and_scale_from_layer(data, &ubo_data->layers[cur_layer].color_scale,
 		                                &ubo_data->layers[cur_layer].color_bias);

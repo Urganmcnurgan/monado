@@ -119,7 +119,10 @@ get_role_profile_head(const struct oxr_roles *roles)
 static inline enum xrt_device_name
 get_role_profile_eyes(const struct oxr_roles *roles)
 {
-	return XRT_DEVICE_INVALID;
+	// The eyes role is only ever bound through the eye gaze interaction profile; this lets a device that also has
+	// other roles (e.g. an HMD with eye tracking, like the Varjo Aero) take it -- without the override the resolver
+	// only matches profiles by the device's own name (an HMD name never matches /ext/eye_gaze_interaction).
+	return XRT_DEVICE_EYE_GAZE_INTERACTION;
 }
 static inline enum xrt_device_name
 get_role_profile_face(const struct oxr_roles *roles)

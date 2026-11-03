@@ -9,6 +9,10 @@
  * @ingroup oxr_main
  */
 
+#include "util/u_aero.h"
+#include "util/u_logging.h"
+#include <string.h>
+#include <unistd.h>
 #include "xrt/xrt_device.h"
 #include "xrt/xrt_config_build.h"
 #include "xrt/xrt_config_have.h"
@@ -116,6 +120,40 @@ convert_blend_factor(XrBlendFactorFB blend_factor)
 	}
 }
 #endif // OXR_HAVE_FB_composition_layer_alpha_blend
+
+/*!
+ * Varjo Aero: should this app's layers be sRGB-decoded once more? D3D games under Proton (wineopenxr) submit images
+ * that are encoded twice -- Red Matter 2 and Beat Saber looked washed out (2026-10-29). AERO_SRGB_FIX=1/0 forces it;
+ * otherwise it is on when the app runs under Wine (Proton sets WINEPREFIX; or the process is a wine binary).
+ * Decided once per process.
+ */
+static bool
+aero_srgb_fix_enabled(void)
+{
+	static int enabled = -1;
+	if (enabled >= 0) {
+		return enabled == 1;
+	}
+	const char *env = u_aero_get("AERO_SRGB_FIX");
+	if (env != NULL && (env[0] == '0' || env[0] == '1')) {
+		enabled = env[0] == '1';
+	} else {
+		char exe[512] = {0};
+		ssize_t n = readlink("/proc/self/exe", exe, sizeof(exe) - 1);
+		enabled = getenv("WINEPREFIX") != NULL || (n > 0 && strstr(exe, "wine") != NULL);
+	}
+	U_LOG_I("Varjo Aero: sRGB double-encoding fix %s", enabled ? "on (sRGB swapchains)" : "off");
+	return enabled == 1;
+}
+
+//! Only images in an sRGB format can be encoded twice; decoding a UNORM image once more would darken it.
+static enum xrt_layer_composition_flags
+aero_srgb_flags(const struct oxr_swapchain *sc)
+{
+	return (sc != NULL && sc->aero_srgb_format && aero_srgb_fix_enabled())
+	           ? XRT_LAYER_COMPOSITION_AERO_SRGB_DECODE_BIT
+		   : 0;
+}
 
 static enum xrt_layer_composition_flags
 convert_layer_flags(struct oxr_session *sess, XrSwapchainUsageFlags xr_flags)
@@ -1317,7 +1355,7 @@ submit_quad_layer(struct oxr_session *sess,
 	struct oxr_swapchain *sc = XRT_CAST_OXR_HANDLE_TO_PTR(struct oxr_swapchain *, quad->subImage.swapchain);
 	struct oxr_space *spc = XRT_CAST_OXR_HANDLE_TO_PTR(struct oxr_space *, quad->space);
 
-	enum xrt_layer_composition_flags flags = convert_layer_flags(sess, quad->layerFlags);
+	enum xrt_layer_composition_flags flags = convert_layer_flags(sess, quad->layerFlags) | aero_srgb_flags(sc);
 
 	struct xrt_pose *pose_ptr = (struct xrt_pose *)&quad->pose;
 
@@ -1396,6 +1434,7 @@ submit_projection_layer(struct oxr_session *sess,
 			return XR_SUCCESS;
 		}
 	}
+	flags |= aero_srgb_flags(scs[0]);
 
 	if (spc->space_type == OXR_SPACE_TYPE_REFERENCE_VIEW) {
 		flags |= XRT_LAYER_COMPOSITION_VIEW_SPACE_BIT;

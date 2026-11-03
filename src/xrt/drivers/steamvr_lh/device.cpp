@@ -26,6 +26,7 @@
 #include "util/u_json.hpp"
 
 #include "util/u_time.h"
+#include "util/u_aero.h"
 #include "xrt/xrt_defines.h"
 #include "xrt/xrt_device.h"
 #include "xrt/xrt_prober.h"
@@ -46,6 +47,13 @@
 #include <thread>
 #include <algorithm>
 #include <map>
+#include <cstdio>
+#include <cstdlib>
+#include <fcntl.h>
+#include <unistd.h>
+#include <atomic>
+
+#include "util/u_aero.h"
 
 #define DEV_ERR(...) U_LOG_IFL_E(ctx->log_level, __VA_ARGS__)
 #define DEV_WARN(...) U_LOG_IFL_W(ctx->log_level, __VA_ARGS__)
@@ -934,11 +942,77 @@ HmdDevice::update_inputs()
 	return XRT_SUCCESS;
 }
 
+/*!
+ * Varjo Aero: newest gaze from /dev/shm/aero-gaze (aero_eyetrack.py): struct <d f f I I> = t (CLOCK_MONOTONIC s),
+ * x, y (deg, +x right, +y up -- angles like an xrt_fov's, so the gaze ray is (tan x, tan y, -1)), valid, seq.
+ * Opened per call: the tracker may recreate the file, and a gaze query is one small read per frame.
+ * False when missing, invalid or older than 100 ms (the same freshness as the gaze-driven inset).
+ */
+static bool
+aero_read_gaze_deg(float *out_x, float *out_y)
+{
+	int fd = open("/dev/shm/aero-gaze", O_RDONLY | O_CLOEXEC);
+	if (fd < 0) {
+		return false;
+	}
+	unsigned char buf[24];
+	ssize_t n = pread(fd, buf, sizeof(buf), 0);
+	close(fd);
+	if (n != (ssize_t)sizeof(buf)) {
+		return false;
+	}
+	double t;
+	float x, y;
+	uint32_t valid;
+	memcpy(&t, buf, 8);
+	memcpy(&x, buf + 8, 4);
+	memcpy(&y, buf + 12, 4);
+	memcpy(&valid, buf + 16, 4);
+	double age = (double)os_monotonic_get_ns() / 1e9 - t;
+	if (!valid || age > 0.1 || age < -0.1 || !std::isfinite(x) || !std::isfinite(y)) {
+		return false;
+	}
+	*out_x = x;
+	*out_y = y;
+	return true;
+}
+
 xrt_result_t
 HmdDevice::get_tracked_pose(xrt_input_name name, uint64_t at_timestamp_ns, xrt_space_relation *out_relation)
 {
 	switch (name) {
 	case XRT_INPUT_GENERIC_HEAD_POSE: Device::get_pose(at_timestamp_ns, out_relation); break;
+	case XRT_INPUT_GENERIC_EYE_GAZE_POSE: {
+		float gx, gy;
+		if (!this->supported.eye_gaze || !aero_read_gaze_deg(&gx, &gy)) {
+			// No valid gaze: the app sees the eye gaze pose as inactive.
+			*out_relation = XRT_SPACE_RELATION_ZERO;
+			break;
+		}
+		xrt_space_relation head = {};
+		Device::get_pose(at_timestamp_ns, &head);
+
+		// Gaze ray (tan x, tan y, -1) in head space as yaw about +Y, then pitch about +X; origin at the head.
+		const float tx = tanf(gx * (float)M_PI / 180.0f), ty = tanf(gy * (float)M_PI / 180.0f);
+		const float yaw = atan2f(-tx, 1.0f), pitch = atan2f(ty, sqrtf(1.0f + tx * tx));
+		const xrt_vec3 y_axis = {0, 1, 0}, x_axis = {1, 0, 0};
+		xrt_quat q_yaw, q_pitch;
+		math_quat_from_angle_vector(yaw, &y_axis, &q_yaw);
+		math_quat_from_angle_vector(pitch, &x_axis, &q_pitch);
+		xrt_pose gaze_in_head = XRT_POSE_IDENTITY;
+		math_quat_rotate(&q_yaw, &q_pitch, &gaze_in_head.orientation);
+
+		*out_relation = head;
+		math_pose_transform(&head.pose, &gaze_in_head, &out_relation->pose);
+		out_relation->linear_velocity = {};
+		out_relation->angular_velocity = {};
+		out_relation->relation_flags =
+		    (xrt_space_relation_flags)(head.relation_flags & (XRT_SPACE_RELATION_ORIENTATION_VALID_BIT |
+		                                                      XRT_SPACE_RELATION_POSITION_VALID_BIT |
+		                                                      XRT_SPACE_RELATION_ORIENTATION_TRACKED_BIT |
+		                                                      XRT_SPACE_RELATION_POSITION_TRACKED_BIT));
+		break;
+	}
 	default: U_LOG_XDEV_UNSUPPORTED_INPUT(this, ctx->log_level, name); return XRT_ERROR_INPUT_UNSUPPORTED;
 	}
 
@@ -1052,6 +1126,20 @@ HmdDevice::get_view_poses(const xrt_vec3 *default_eye_relation,
 	eye_relation.x = this->getIpdM();
 
 	float override_ipd_mm = debug_get_float_option_lh_override_ipd();
+	if (override_ipd_mm == -1.0f) {
+		// Varjo Aero: the user's IPD from the session file (the companion writes it from varjo-aero.conf), so
+		// it reaches Monado however it was started. Re-read once a second: a side-button measurement moves the
+		// lenses while Monado runs, and the render IPD has to follow.
+		static std::atomic<float> aero_ipd_mm{-1.0f};
+		static std::atomic<int64_t> aero_next_check_ns{0};
+		const int64_t now_ns = os_monotonic_get_ns();
+		if (now_ns >= aero_next_check_ns.load()) {
+			aero_next_check_ns = now_ns + U_TIME_1S_IN_NS;
+			char buf[32];
+			aero_ipd_mm = u_aero_get_fresh("AERO_IPD_MM", buf, sizeof(buf)) ? (float)atof(buf) : -1.0f;
+		}
+		override_ipd_mm = aero_ipd_mm.load();
+	}
 	if (override_ipd_mm != -1.0f) {
 		// Convert from mm -> m
 		eye_relation.x = override_ipd_mm / 1000.0f;
@@ -1083,6 +1171,37 @@ HmdDevice::get_view_poses(const xrt_vec3 *default_eye_relation,
 xrt_result_t
 HmdDevice::compute_distortion(uint32_t view, float u, float v, xrt_uv_triplet *out_result)
 {
+	// Varjo Aero: the 180 degree panel rotation = the lens model evaluated in mirrored panel coordinates. Works on
+	// both compositors (verified 2026-10-30); only used while the distortion mesh is built.
+	if (this->aero_rotated) {
+		u = 1.0f - u;
+		v = 1.0f - v;
+	}
+	// Varjo Aero: factory per-colour distortion table, bilinear lookup.
+	if (this->aero_dist.n != 0 && view < 2) {
+		const uint32_t n = this->aero_dist.n;
+		const float fx = std::clamp(u, 0.0f, 1.0f) * (float)(n - 1);
+		const float fy = std::clamp(v, 0.0f, 1.0f) * (float)(n - 1);
+		const uint32_t x0 = std::min((uint32_t)fx, n - 2), y0 = std::min((uint32_t)fy, n - 2);
+		const float ax = fx - (float)x0, ay = fy - (float)y0;
+		xrt_vec2 *outs[3] = {&out_result->r, &out_result->g, &out_result->b};
+		for (uint32_t c = 0; c < 3; c++) {
+			const float *t = this->aero_dist.uv.data() + (size_t)(view * 3 + c) * n * n * 2;
+			auto at = [&](uint32_t x, uint32_t y, uint32_t k) { return t[((size_t)y * n + x) * 2 + k]; };
+			if (at(x0, y0, 0) < 0 || at(x0 + 1, y0, 0) < 0 || at(x0, y0 + 1, 0) < 0 ||
+			    at(x0 + 1, y0 + 1, 0) < 0) {
+				*outs[c] = {-1.0f, -1.0f};
+				continue;
+			}
+			for (uint32_t k = 0; k < 2; k++) {
+				const float top = at(x0, y0, k) * (1 - ax) + at(x0 + 1, y0, k) * ax;
+				const float bot = at(x0, y0 + 1, k) * (1 - ax) + at(x0 + 1, y0 + 1, k) * ax;
+				(k == 0 ? outs[c]->x : outs[c]->y) = top * (1 - ay) + bot * ay;
+			}
+		}
+		return XRT_SUCCESS;
+	}
+
 	// Vive Pro 2 has it's own special distortion model
 	if (this->variant == VIVE_VARIANT_PRO2 && this->vp2.hid != nullptr) {
 		vp2_config *config = vp2_get_config(this->vp2.hid);
@@ -1106,6 +1225,35 @@ HmdDevice::compute_distortion(uint32_t view, float u, float v, xrt_uv_triplet *o
 	out_result->g = {coords.rfGreen[0], coords.rfGreen[1]};
 	out_result->b = {coords.rfBlue[0], coords.rfBlue[1]};
 	return XRT_SUCCESS;
+}
+
+bool
+HmdDevice::load_aero_distortion(const char *path)
+{
+	FILE *f = std::fopen(path, "rb");
+	if (f == nullptr) {
+		DEV_WARN("Varjo Aero: no distortion table at %s, using the lighthouse lens model", path);
+		return false;
+	}
+	char magic[8] = {};
+	uint32_t n = 0;
+	AeroDistortion d;
+	bool ok = std::fread(magic, 1, 8, f) == 8 && std::memcmp(magic, "AEROD1\0\0", 8) == 0 &&
+	          std::fread(&n, 4, 1, f) == 1 && n >= 2 && n <= 1024 &&
+	          std::fread(d.fov_tan, sizeof(float), 8, f) == 8;
+	if (ok) {
+		d.uv.resize((size_t)2 * 3 * n * n * 2);
+		ok = std::fread(d.uv.data(), sizeof(float), d.uv.size(), f) == d.uv.size();
+	}
+	std::fclose(f);
+	if (!ok) {
+		DEV_ERR("Varjo Aero: %s is not a valid distortion table", path);
+		return false;
+	}
+	d.n = n;
+	this->aero_dist = std::move(d);
+	DEV_INFO("Varjo Aero: loaded factory distortion table %s (%ux%u per eye and colour)", path, n, n);
+	return true;
 }
 
 void
@@ -1439,6 +1587,41 @@ HmdDevice::set_hmd_class(const InputClass *hmd_class)
 	set_input_class(hmd_class);
 }
 
+/*!
+ * Varjo Aero (lighthouse model "hedy"): add the eye gaze from our eye tracker (aero_eyetrack.py) as an input, so the
+ * HMD takes the eyes role and apps get XR_EXT_eye_gaze_interaction (e.g. Half-Life: Alyx's foveated rendering through
+ * xrizer). AERO_EYE_GAZE=0 turns it off. Appended into the spare slot set_input_class reserves instead of switching the
+ * input class: lighthouse creates the HMD's input components (pointers into inputs_vec) before the model number
+ * arrives, so set_hmd_class refuses to rebuild the inputs at that point.
+ */
+//! Eye tracking needs no start/stop here: aero_eyetrack.py runs whenever Monado does (varjo-aero companion service).
+static xrt_result_t
+aero_eye_feature_noop(struct xrt_device *xdev, enum xrt_device_feature_type type)
+{
+	return type == XRT_DEVICE_FEATURE_EYE_TRACKING ? XRT_SUCCESS : XRT_ERROR_FEATURE_NOT_SUPPORTED;
+}
+
+void
+HmdDevice::add_aero_eye_gaze()
+{
+	if (this->supported.eye_gaze) {
+		return;
+	}
+	if (inputs_vec.size() >= inputs_vec.capacity()) {
+		DEV_WARN("Varjo Aero: no free input slot, eye gaze not exposed");
+		return;
+	}
+	inputs_vec.push_back({true, 0, XRT_INPUT_GENERIC_EYE_GAZE_POSE, {}});
+	this->inputs = inputs_vec.data();
+	this->input_count = inputs_vec.size();
+	this->supported.eye_gaze = true;
+	// The OpenXR state tracker begins/ends the eye tracking feature around eye gaze use; without these the
+	// service calls a NULL pointer (SIGSEGV in xrt_device_begin_feature, 2026-11-01).
+	this->xrt_device::begin_feature = aero_eye_feature_noop;
+	this->xrt_device::end_feature = aero_eye_feature_noop;
+	DEV_INFO("Varjo Aero: eye gaze exposed (/dev/shm/aero-gaze)");
+}
+
 bool
 HmdDevice::init_vive_pro_2(struct xrt_prober *xp)
 {
@@ -1523,6 +1706,9 @@ HmdDevice::handle_property_write(const vr::PropertyWrite_t &prop)
 
 		auto hmd_class = hmd_classes.find(this->variant);
 		set_hmd_class(hmd_class != hmd_classes.end() ? &hmd_class->second : &generic_hmd_class);
+		if (std::strstr(model_number.c_str(), "hedy") != nullptr && u_aero_get_bool("AERO_EYE_GAZE", true)) {
+			add_aero_eye_gaze();
+		}
 
 		return Device::handle_property_write(prop);
 	}

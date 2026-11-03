@@ -123,8 +123,8 @@ window_peek_run_thread(void *ptr)
 struct comp_window_peek *
 comp_window_peek_create(struct comp_compositor *c)
 {
-	const char *compute = getenv("XRT_COMPOSITOR_COMPUTE");
-	if (compute) {
+	// Use the parsed setting: XRT_COMPOSITOR_COMPUTE=0 (graphics compositor) must not disable the peek window.
+	if (c->settings.use_compute) {
 		COMP_WARN(c, "Peek window cannot be enabled on compute compositor");
 		return NULL;
 	}

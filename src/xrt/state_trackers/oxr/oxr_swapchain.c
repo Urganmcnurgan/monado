@@ -8,6 +8,7 @@
  * @ingroup oxr_main
  */
 
+#include <inttypes.h>
 #include "util/u_debug.h"
 #include "util/u_misc.h"
 
@@ -266,6 +267,11 @@ oxr_swapchain_common_create(struct oxr_logger *log,
 	    .mip_count = createInfo->mipCount,
 	};
 
+	// Varjo Aero: log what the app asks for (diagnosing washed-out colour from Proton/D3D games, 2026-10-29).
+	oxr_log(log, "swapchain %ux%u format %" PRId64 " usage 0x%" PRIx64 " samples %u array %u", createInfo->width,
+	        createInfo->height, createInfo->format, (uint64_t)createInfo->usageFlags, createInfo->sampleCount,
+	        createInfo->arraySize);
+
 #ifdef OXR_HAVE_KHR_vulkan_swapchain_format_list
 	const XrVulkanSwapchainFormatListCreateInfoKHR *format_list = NULL;
 	if (sess->sys->inst->extensions.KHR_vulkan_swapchain_format_list) {
@@ -309,6 +315,10 @@ oxr_swapchain_common_create(struct oxr_logger *log,
 	sc->swapchain = xsc;
 	sc->width = createInfo->width;
 	sc->height = createInfo->height;
+	// VK_FORMAT_{R8,R8G8,R8G8B8,B8G8R8,R8G8B8A8,B8G8R8A8,A8B8G8R8_PACK32}_SRGB. Only Vulkan values: the fix is for
+	// Wine apps, and wineopenxr hands Monado Vulkan swapchains whatever the game's own API.
+	const int64_t f = createInfo->format;
+	sc->aero_srgb_format = f == 15 || f == 22 || f == 29 || f == 36 || f == 43 || f == 50 || f == 57;
 	sc->array_layer_count = createInfo->arraySize;
 	sc->face_count = createInfo->faceCount;
 	sc->is_static = (createInfo->createFlags & XR_SWAPCHAIN_CREATE_STATIC_IMAGE_BIT) != 0;

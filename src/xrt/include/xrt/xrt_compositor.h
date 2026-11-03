@@ -153,6 +153,13 @@ enum xrt_layer_composition_flags
 	 * layer below it.
 	 */
 	XRT_LAYER_SPLIT_QUAD_VIEW_INSET = 1u << 13u,
+
+	/*!
+	 * Varjo Aero: the layer's image holds sRGB-encoded values in an sRGB format, i.e. it was encoded twice
+	 * (Red Matter 2 / UE 4.27 OpenXR on D3D11 via Proton); compositors decode once more. Set by AERO_SRGB_FIX=1
+	 * in the app's environment.
+	 */
+	XRT_LAYER_COMPOSITION_AERO_SRGB_DECODE_BIT = 1u << 30u,
 };
 
 /*!

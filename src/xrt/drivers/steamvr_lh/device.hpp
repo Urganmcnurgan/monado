@@ -176,6 +176,22 @@ public:
 	struct VivePro2Data vp2{};
 	// clang-format on
 
+	//! Varjo Aero factory distortion (headset storage entry 0x1000, converted by varjo-aero/aero_mkdist.py).
+	//! n == 0 when not loaded; uv holds [view][r,g,b][n*n][u,v] in render-image uv, -1 = outside the lens.
+	struct AeroDistortion
+	{
+		uint32_t n{0};
+		float fov_tan[2][4]{}; // left, right, up (+), down (-)
+		std::vector<float> uv;
+	} aero_dist;
+
+	//! Varjo Aero: the panels are mounted rotated 180 degrees; the rotation is done in compute_distortion (mirrored
+	//! lens lookup), so the views report no rotation -- the compute compositor ignores view rotation.
+	bool aero_rotated{false};
+
+	bool
+	load_aero_distortion(const char *path);
+
 	HmdDevice(const DeviceBuilder &builder);
 
 	float
@@ -217,6 +233,9 @@ public:
 
 	bool
 	init_vive_pro_2(struct xrt_prober *xp);
+
+	void
+	add_aero_eye_gaze();
 
 private:
 	std::unique_ptr<Parts> hmd_parts{nullptr};
